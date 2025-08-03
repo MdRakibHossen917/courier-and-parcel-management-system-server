@@ -267,6 +267,59 @@ async function run() {
        }
      });
 
+       app.patch("/parcels/:id/status", async (req, res) => {
+         const parcelId = req.params.id;
+         const { status } = req.body;
+         const updatedDoc = {
+           delivery_status: status,
+         };
+
+         if (status === "in_transit") {
+           updatedDoc.picked_at = new Date().toISOString();
+         } else if (status === "delivered") {
+           updatedDoc.delivered_at = new Date().toISOString();
+         }
+
+         try {
+           const result = await parcelsCollection.updateOne(
+             { _id: new ObjectId(parcelId) },
+             {
+               $set: updatedDoc,
+             }
+           );
+           res.send(result);
+         } catch (error) {
+           res.status(500).send({ message: "Failed to update status" });
+         }
+       });
+
+
+      // GET: Get pending delivery tasks for a rider
+        app.get('/rider/parcels', verifyFBToken, verifyRider, async (req, res) => {
+            try {
+                const email = req.query.email;
+
+                if (!email) {
+                    return res.status(400).send({ message: 'Rider email is required' });
+                }
+
+                const query = {
+                    assigned_rider_email: email,
+                    delivery_status: { $in: ['rider_assigned', 'in_transit'] },
+                };
+
+                const options = {
+                    sort: { creation_date: -1 }, // Newest first
+                };
+
+                const parcels = await parcelsCollection.find(query, options).toArray();
+                res.send(parcels);
+            } catch (error) {
+                console.error('Error fetching rider tasks:', error);
+                res.status(500).send({ message: 'Failed to get rider tasks' });
+            }
+        });
+
     // DELETE /parcels/:id - delete a parcel
     app.delete("/parcels/:id", async (req, res) => {
       try {
@@ -301,6 +354,7 @@ async function run() {
         res.status(500).send({ message: "Failed to load pending riders" });
       }
     });
+    
 
     app.get("/riders/active", verifyFBToken, verifyAdmin, async (req, res) => {
       const result = await ridersCollection
