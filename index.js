@@ -39,6 +39,7 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const ridersCollection = db.collection("riders");
     const parcelsCollection = db.collection("parcels");
+     const trackingsCollection = db.collection("trackings");
 
     // custom middlewares
     const verifyFBToken = async (req, res, next) => {
@@ -364,6 +365,38 @@ app.get('/users' ,verifyFBToken,verifyAdmin, async (req, res) => {
       const result = await ridersCollection.insertOne(rider);
       res.send(result);
     });
+
+       app.get("/trackings/:trackingId", async (req, res) => {
+         const trackingId = req.params.trackingId;
+
+         const updates = await trackingsCollection
+           .find({ tracking_id: trackingId })
+           .sort({ timestamp: 1 }) // sort by time ascending
+           .toArray();
+
+         res.json(updates);
+       });
+
+       app.post("/trackings", async (req, res) => {
+         const update = req.body;
+
+         update.timestamp = new Date(); // ensure correct timestamp
+         if (!update.tracking_id || !update.status) {
+           return res
+             .status(400)
+             .json({ message: "tracking_id and status are required." });
+         }
+
+         const result = await trackingsCollection.insertOne(update);
+         res.status(201).json(result);
+       });
+
+       app.post("/riders", async (req, res) => {
+         const rider = req.body;
+         const result = await ridersCollection.insertOne(rider);
+         res.send(result);
+       });
+
 
     app.get("/riders/pending", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
