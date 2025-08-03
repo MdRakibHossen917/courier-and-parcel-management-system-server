@@ -166,6 +166,16 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+    // GET all users
+app.get('/users' ,verifyFBToken,verifyAdmin, async (req, res) => {
+  try {
+    const users = await usersCollection.find().toArray();
+    res.send(users);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to fetch users' });
+  }
+});
+
 
     // parcels api
     // GET: All parcels OR parcels by user (created_by), sorted by latest
@@ -292,6 +302,20 @@ async function run() {
         res.status(500).send({ message: "Failed to update status" });
       }
     });
+
+       app.patch("/parcels/:id/cashOut", async (req, res) => {
+         const id = req.params.id;
+         const result = await parcelsCollection.updateOne(
+           { _id: new ObjectId(id) },
+           {
+             $set: {
+               cashout_status: "cashed_out",
+               cashed_out_at: new Date(),
+             },
+           }
+         );
+         res.send(result);
+       });
 
     // GET: Get pending delivery tasks for a rider
     app.get("/rider/parcels", verifyFBToken, verifyRider, async (req, res) => {
