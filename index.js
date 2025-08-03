@@ -1,9 +1,10 @@
-require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const dotenv = require("dotenv");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
+require("dotenv").config();
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -27,7 +28,6 @@ const client = new MongoClient(process.env.MONGODB_URI, {
 async function run() {
   try {
     const db = client.db("parcelDB");
-    const usersCollection = db.collection("users");
     const parcelCollection = db.collection("parcels");
     const paymentsCollection = db.collection("payments");
 
@@ -94,26 +94,22 @@ async function run() {
       }
     });
 
-     app.get("/payments", async (req, res) => {
-       try {
-         const userEmail = req.query.email;
-         console.log("decocded", req.decoded);
-         if (req.decoded.email !== userEmail) {
-           return res.status(403).send({ message: "forbidden access" });
+    //get payments
+       app.get("/payments", async (req, res) => {
+         try {
+           const userEmail = req.query.email;
+
+           const query = userEmail ? { email: userEmail } : {};
+           const options = { sort: { paid_at: -1 } };  
+           const payments = await paymentsCollection
+             .find(query, options)
+             .toArray();
+           res.send(payments);
+         } catch (error) {
+           console.error("Error fetching payment history:", error);
+           res.status(500).send({ message: "Failed to get payments" });
          }
-
-         const query = userEmail ? { email: userEmail } : {};
-         const options = { sort: { paid_at: -1 } }; // Latest first
-
-         const payments = await paymentsCollection
-           .find(query, options)
-           .toArray();
-         res.send(payments);
-       } catch (error) {
-         console.error("Error fetching payment history:", error);
-         res.status(500).send({ message: "Failed to get payments" });
-       }
-     });
+       });
 
     // POST: Record payment and update parcel status
     app.post("/payments", async (req, res) => {
