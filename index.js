@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const admin = require("firebase-admin");
 
 require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -14,8 +15,16 @@ const corsOptions = {
   credentials: true,
 };
 app.use(cors(corsOptions));
-
 app.use(express.json());
+
+
+
+const serviceAccount = require("./firebase-admin-key.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
 
 const client = new MongoClient(process.env.MONGODB_URI, {
   serverApi: {
@@ -28,11 +37,49 @@ const client = new MongoClient(process.env.MONGODB_URI, {
 async function run() {
   try {
     const db = client.db("parcelDB");
+    const usersCollection = db.collection("users");
     const parcelCollection = db.collection("parcels");
     const paymentsCollection = db.collection("payments");
 
+    // custom middlewares
+    const verifyFBToken = async (req, res, next) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+      const token = authHeader.split(" ")[1];
+      if (!token) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      // verify the token
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded;
+        next();
+      } catch (error) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+    };
+
+    //users
+
+    app.post("/users",  async (req, res) => {
+      const email = req.body.email;
+      const userExists = await usersCollection.findOne({ email });
+      if (userExists) {
+        // update last log in
+        return res
+          .status(200)
+          .send({ message: "User already exists", inserted: false });
+      }
+      const user = req.body;
+      const result = await usersCollection.insertOne(user);
+      res.send(result);
+    });
+
     // GET /parcels?email=user@example.com
-    app.get("/parcels", async (req, res) => {
+    app.get("/parcels", verifyFBToken, async (req, res) => {
       try {
         const userEmail = req.query.email;
         const query = userEmail ? { created_by: userEmail } : {};
@@ -94,22 +141,49 @@ async function run() {
       }
     });
 
-    //get payments
-       app.get("/payments", async (req, res) => {
-         try {
-           const userEmail = req.query.email;
+    //tracking
+    app.post("/tracking", async (req, res) => {
+      const {
+        tracking_id,
+        parcel_id,
+        status,
+        message,
+        updated_by = "",
+      } = req.body;
 
-           const query = userEmail ? { email: userEmail } : {};
-           const options = { sort: { paid_at: -1 } };  
-           const payments = await paymentsCollection
-             .find(query, options)
-             .toArray();
-           res.send(payments);
-         } catch (error) {
-           console.error("Error fetching payment history:", error);
-           res.status(500).send({ message: "Failed to get payments" });
-         }
-       });
+      const log = {
+        tracking_id,
+        parcel_id: parcel_id ? new ObjectId(parcel_id) : undefined,
+        status,
+        message,
+        time: new Date(),
+        updated_by,
+      };
+
+      const result = await trackingCollection.insertOne(log);
+      res.send({ success: true, insertedId: result.insertedId });
+    });
+
+    //get payments
+    app.get("/payments",verifyFBToken, async (req, res) => {
+      try {
+        const userEmail = req.query.email;
+
+          if (req.decoded.email !== userEmail) {
+            return res.status(403).send({ message: "forbidden access" });
+          }
+
+        const query = userEmail ? { email: userEmail } : {};
+        const options = { sort: { paid_at: -1 } };
+        const payments = await paymentsCollection
+          .find(query, options)
+          .toArray();
+        res.send(payments);
+      } catch (error) {
+        console.error("Error fetching payment history:", error);
+        res.status(500).send({ message: "Failed to get payments" });
+      }
+    });
 
     // POST: Record payment and update parcel status
     app.post("/payments", async (req, res) => {
