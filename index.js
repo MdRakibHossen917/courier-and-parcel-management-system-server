@@ -17,14 +17,11 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-
-
 const serviceAccount = require("./firebase-admin-key.json");
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
-
 
 const client = new MongoClient(process.env.MONGODB_URI, {
   serverApi: {
@@ -40,6 +37,7 @@ async function run() {
     const usersCollection = db.collection("users");
     const parcelCollection = db.collection("parcels");
     const paymentsCollection = db.collection("payments");
+    const ridersCollection = db.collection("riders");
 
     // custom middlewares
     const verifyFBToken = async (req, res, next) => {
@@ -62,9 +60,98 @@ async function run() {
       }
     };
 
+    //verify admin
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+    //verify rider
+    const verifyRider = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      if (!user || user.role !== "rider") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
     //users
 
-    app.post("/users",  async (req, res) => {
+    app.get("/users/search", async (req, res) => {
+      const emailQuery = req.query.email;
+      if (!emailQuery) {
+        return res.status(400).send({ message: "Missing email query" });
+      }
+
+      const regex = new RegExp(emailQuery, "i"); // case-insensitive partial match
+
+      try {
+        const users = await usersCollection
+          .find({ email: { $regex: regex } })
+          // .project({ email: 1, createdAt: 1, role: 1 })
+          .limit(10)
+          .toArray();
+        res.send(users);
+      } catch (error) {
+        console.error("Error searching users", error);
+        res.status(500).send({ message: "Error searching users" });
+      }
+    });
+
+    // GET: Get user role by email
+    app.get("/users/:email/role", async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send({ role: user.role || "user" });
+      } catch (error) {
+        console.error("Error getting user role:", error);
+        res.status(500).send({ message: "Failed to get role" });
+      }
+    });
+
+    app.patch(
+      "/users/:id/role",
+      verifyFBToken,verifyAdmin,
+
+      async (req, res) => {
+        const { id } = req.params;
+        const { role } = req.body;
+
+        if (!["admin", "user"].includes(role)) {
+          return res.status(400).send({ message: "Invalid role" });
+        }
+
+        try {
+          const result = await usersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { role } }
+          );
+          res.send({ message: `User role updated to ${role}`, result });
+        } catch (error) {
+          console.error("Error updating user role", error);
+          res.status(500).send({ message: "Failed to update user role" });
+        }
+      }
+    );
+
+    app.post("/users", async (req, res) => {
       const email = req.body.email;
       const userExists = await usersCollection.findOne({ email });
       if (userExists) {
@@ -78,21 +165,37 @@ async function run() {
       res.send(result);
     });
 
-    // GET /parcels?email=user@example.com
-    app.get("/parcels", verifyFBToken, async (req, res) => {
-      try {
-        const userEmail = req.query.email;
-        const query = userEmail ? { created_by: userEmail } : {};
-        const parcels = await parcelCollection
-          .find(query)
-          .sort({ createdAt: -1 })
-          .toArray();
-        res.send(parcels);
-      } catch (error) {
-        console.error("Error fetching parcels:", error);
-        res.status(500).send({ message: "Failed to get parcels" });
-      }
-    });
+   // parcels api
+        // GET: All parcels OR parcels by user (created_by), sorted by latest
+        app.get('/parcels', verifyFBToken, async (req, res) => {
+            try {
+                const { email, payment_status, delivery_status } = req.query;
+                let query = {}
+                if (email) {
+                    query = { created_by: email }
+                }
+
+                if (payment_status) {
+                    query.payment_status = payment_status
+                }
+
+                if (delivery_status) {
+                    query.delivery_status = delivery_status
+                }
+
+                const options = {
+                    sort: { createdAt: -1 }, // Newest first
+                };
+
+                console.log('parcel query', req.query, query)
+
+                const parcels = await parcelsCollection.find(query, options).toArray();
+                res.send(parcels);
+            } catch (error) {
+                console.error('Error fetching parcels:', error);
+                res.status(500).send({ message: 'Failed to get parcels' });
+            }
+        });
 
     // GET: Get a specific parcel by ID
     app.get("/parcels/:id", async (req, res) => {
@@ -141,6 +244,68 @@ async function run() {
       }
     });
 
+    //riders
+
+    app.post("/riders", async (req, res) => {
+      const rider = req.body;
+      const result = await ridersCollection.insertOne(rider);
+      res.send(result);
+    });
+
+    app.get("/riders/pending", verifyFBToken,verifyAdmin, async (req, res) => {
+      try {
+        const pendingRiders = await ridersCollection
+          .find({ status: "pending" })
+          .toArray();
+
+        res.send(pendingRiders);
+      } catch (error) {
+        console.error("Failed to load pending riders:", error);
+        res.status(500).send({ message: "Failed to load pending riders" });
+      }
+    });
+
+    app.get("/riders/active", verifyFBToken, verifyAdmin, async (req, res) => {
+      const result = await ridersCollection
+        .find({ status: "active" })
+        .toArray();
+      res.send(result);
+    });
+
+    app.patch("/riders/:id/status", async (req, res) => {
+      const { id } = req.params;
+      const { status, email } = req.body;
+      const query = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: {
+          status,
+        },
+      };
+
+      try {
+        const result = await ridersCollection.updateOne(query, updateDoc);
+
+        // update user role for accepting rider
+        if (status === "active") {
+          const userQuery = { email };
+          const userUpdateDoc = {
+            $set: {
+              role: "rider",
+            },
+          };
+          const roleResult = await usersCollection.updateOne(
+            userQuery,
+            userUpdateDoc
+          );
+          console.log(roleResult.modifiedCount);
+        }
+
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update rider status" });
+      }
+    });
+
     //tracking
     app.post("/tracking", async (req, res) => {
       const {
@@ -165,13 +330,13 @@ async function run() {
     });
 
     //get payments
-    app.get("/payments",verifyFBToken, async (req, res) => {
+    app.get("/payments", verifyFBToken, async (req, res) => {
       try {
         const userEmail = req.query.email;
 
-          if (req.decoded.email !== userEmail) {
-            return res.status(403).send({ message: "forbidden access" });
-          }
+        if (req.decoded.email !== userEmail) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
 
         const query = userEmail ? { email: userEmail } : {};
         const options = { sort: { paid_at: -1 } };
