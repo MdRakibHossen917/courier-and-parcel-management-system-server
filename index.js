@@ -1,27 +1,41 @@
+require("dotenv").config();
+const fs = require("fs");
+const admin = require("firebase-admin");
 const express = require("express");
 const cors = require("cors");
-const dotenv = require("dotenv");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const admin = require("firebase-admin");
-
-require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
 const app = express();
 const port = process.env.PORT || 5000;
 
-// CORS setup - allow only specific origins, with credentials
+// CORS setup
 const corsOptions = {
-  origin: ["http://localhost:5173", "http://localhost:5174"],
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "https://express-delivery-9e788.web.app",
+  ],
   credentials: true,
 };
+
 app.use(cors(corsOptions));
 app.use(express.json());
 
-const serviceAccount = require("./firebase-admin-key.json");
+const decodedKey = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decodedKey);
+try {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
+  console.log("Firebase initialized successfully");
+} catch (error) {
+  console.error("Firebase initialization error:", error);
+  process.exit(1);
+}
 
 const client = new MongoClient(process.env.MONGODB_URI, {
   serverApi: {
@@ -30,7 +44,6 @@ const client = new MongoClient(process.env.MONGODB_URI, {
     deprecationErrors: true,
   },
 });
-
 async function run() {
   try {
     const db = client.db("parcelDB");
@@ -39,7 +52,7 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const ridersCollection = db.collection("riders");
     const parcelsCollection = db.collection("parcels");
-     const trackingsCollection = db.collection("trackings");
+    const trackingsCollection = db.collection("trackings");
 
     // custom middlewares
     const verifyFBToken = async (req, res, next) => {
@@ -168,16 +181,15 @@ async function run() {
       res.send(result);
     });
     // GET all users
-app.get('/users' ,verifyFBToken,verifyAdmin, async (req, res) => {
-  try {
-    const users = await usersCollection.find().toArray();
-    res.send(users);
-  } catch (error) {
-    res.status(500).send({ message: 'Failed to fetch users' });
-  }
-});
-
-
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const users = await usersCollection.find().toArray();
+        res.send(users);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch users" });
+      }
+    });
+    
     // parcels api
     // GET: All parcels OR parcels by user (created_by), sorted by latest
     app.get("/parcels", verifyFBToken, async (req, res) => {
@@ -304,19 +316,19 @@ app.get('/users' ,verifyFBToken,verifyAdmin, async (req, res) => {
       }
     });
 
-       app.patch("/parcels/:id/cashOut", async (req, res) => {
-         const id = req.params.id;
-         const result = await parcelsCollection.updateOne(
-           { _id: new ObjectId(id) },
-           {
-             $set: {
-               cashout_status: "cashed_out",
-               cashed_out_at: new Date(),
-             },
-           }
-         );
-         res.send(result);
-       });
+    app.patch("/parcels/:id/cashOut", async (req, res) => {
+      const id = req.params.id;
+      const result = await parcelsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            cashout_status: "cashed_out",
+            cashed_out_at: new Date(),
+          },
+        }
+      );
+      res.send(result);
+    });
 
     // GET: Get pending delivery tasks for a rider
     app.get("/rider/parcels", verifyFBToken, verifyRider, async (req, res) => {
@@ -365,38 +377,6 @@ app.get('/users' ,verifyFBToken,verifyAdmin, async (req, res) => {
       const result = await ridersCollection.insertOne(rider);
       res.send(result);
     });
-
-       app.get("/trackings/:trackingId", async (req, res) => {
-         const trackingId = req.params.trackingId;
-
-         const updates = await trackingsCollection
-           .find({ tracking_id: trackingId })
-           .sort({ timestamp: 1 }) // sort by time ascending
-           .toArray();
-
-         res.json(updates);
-       });
-
-       app.post("/trackings", async (req, res) => {
-         const update = req.body;
-
-         update.timestamp = new Date(); // ensure correct timestamp
-         if (!update.tracking_id || !update.status) {
-           return res
-             .status(400)
-             .json({ message: "tracking_id and status are required." });
-         }
-
-         const result = await trackingsCollection.insertOne(update);
-         res.status(201).json(result);
-       });
-
-       app.post("/riders", async (req, res) => {
-         const rider = req.body;
-         const result = await ridersCollection.insertOne(rider);
-         res.send(result);
-       });
-
 
     app.get("/riders/pending", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
@@ -508,6 +488,29 @@ app.get('/users' ,verifyFBToken,verifyAdmin, async (req, res) => {
       }
     );
 
+    app.get("/parcels/delivery/status-count", async (req, res) => {
+      const pipeline = [
+        {
+          $group: {
+            _id: "$delivery_status",
+            count: {
+              $sum: 1,
+            },
+          },
+        },
+        {
+          $project: {
+            status: "$_id",
+            count: 1,
+            _id: 0,
+          },
+        },
+      ];
+
+      const result = await parcelsCollection.aggregate(pipeline).toArray();
+      res.send(result);
+    });
+
     //tracking
     app.post("/tracking", async (req, res) => {
       const {
@@ -527,8 +530,27 @@ app.get('/users' ,verifyFBToken,verifyAdmin, async (req, res) => {
         updated_by,
       };
 
-      const result = await trackingCollection.insertOne(log);
+      const result = await trackingsCollection.insertOne(log);
       res.send({ success: true, insertedId: result.insertedId });
+    });
+
+    app.get("/tracking/:trackingId", async (req, res) => {
+      const trackingId = req.params.trackingId;
+
+      try {
+        const results = await trackingsCollection
+          .find({ tracking_id: trackingId })
+          .sort({ time: -1 })
+          .toArray();
+
+        if (results.length === 0) {
+          return res.status(404).send({ message: "Tracking ID not found" });
+        }
+
+        res.send(results);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching tracking data" });
+      }
     });
 
     //get payments
